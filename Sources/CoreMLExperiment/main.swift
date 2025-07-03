@@ -150,11 +150,7 @@ struct CoreMLExperiment {
             let prediction = try loader.runInference(model: model, inputs: inputs)
             
             if let outputs = loader.extractOutputArray(from: prediction) {
-                print("📤 Output: \(outputs)")
-                
-                if modelPath.contains("simple_model") {
-                    print("🧮 Expected (y = 2*x + 1): \(doubleValues.map { 2 * $0 + 1 })")
-                }
+                print(outputs)
             } else {
                 print("❌ Failed to extract output from prediction")
             }
