@@ -134,13 +134,7 @@ struct CoreMLExperiment {
         do {
             let model = try loader.loadModel(from: url)
             
-            let doubleValues = inputValues.compactMap { Double($0) }
-            guard !doubleValues.isEmpty else {
-                print("❌ Error: Invalid input values. Please provide numeric values.")
-                return
-            }
-            
-            let inputs = try loader.createInputArray(doubleValues)
+            let inputs = try loader.createInputs(from: inputValues, for: model)
             let prediction = try loader.runInference(model: model, inputs: inputs)
             
             if let outputs = loader.extractOutputArray(from: prediction) {
