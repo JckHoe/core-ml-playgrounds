@@ -40,58 +40,132 @@ public class ModelLoader {
         let description = model.modelDescription
         var inputs: [String: Any] = [:]
         
-        guard let firstInput = description.inputDescriptionsByName.first else {
+        let inputFeatures = description.inputDescriptionsByName
+        guard !inputFeatures.isEmpty else {
             throw NSError(domain: "ModelLoader", code: 1, userInfo: [NSLocalizedDescriptionKey: "No input features found"])
         }
         
-        let inputName = firstInput.key
-        let inputFeature = firstInput.value
+        var valueIndex = 0
         
-        switch inputFeature.type {
-        case .multiArray:
-            let doubleValues = values.compactMap { Double($0) }
-            if !doubleValues.isEmpty {
-                let multiArray = try MLMultiArray(shape: [NSNumber(value: doubleValues.count)], dataType: .double)
-                for (index, value) in doubleValues.enumerated() {
-                    multiArray[index] = NSNumber(value: value)
+        for (inputName, inputFeature) in inputFeatures {
+            switch inputFeature.type {
+            case .multiArray:
+                if let constraint = inputFeature.multiArrayConstraint {
+                    inputs[inputName] = try createMultiArrayInput(
+                        name: inputName,
+                        constraint: constraint,
+                        values: values,
+                        valueIndex: &valueIndex
+                    )
                 }
-                inputs[inputName] = multiArray
-            }
-        case .string:
-            inputs[inputName] = values.first ?? ""
-        case .int64:
-            inputs[inputName] = Int64(values.first ?? "0") ?? 0
-        case .double:
-            inputs[inputName] = Double(values.first ?? "0.0") ?? 0.0
-        case .image:
-            if let imagePath = values.first {
-                let url = URL(fileURLWithPath: imagePath)
-                do {
-                    let imageData = try Data(contentsOf: url)
-                    if let image = NSImage(data: imageData) {
-                        inputs[inputName] = image
-                        print("✅ Successfully loaded image: \(imagePath)")
-                    } else {
-                        throw NSError(domain: "ModelLoader", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to create NSImage from data"])
+            case .string:
+                inputs[inputName] = valueIndex < values.count ? values[valueIndex] : ""
+                valueIndex += 1
+            case .int64:
+                let value = valueIndex < values.count ? values[valueIndex] : "0"
+                inputs[inputName] = Int64(value) ?? 0
+                valueIndex += 1
+            case .double:
+                let value = valueIndex < values.count ? values[valueIndex] : "0.0"
+                inputs[inputName] = Double(value) ?? 0.0
+                valueIndex += 1
+            case .image:
+                if valueIndex < values.count {
+                    let imagePath = values[valueIndex]
+                    let url = URL(fileURLWithPath: imagePath)
+                    do {
+                        let imageData = try Data(contentsOf: url)
+                        if let image = NSImage(data: imageData) {
+                            inputs[inputName] = image
+                        } else {
+                            throw NSError(domain: "ModelLoader", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to create NSImage from data"])
+                        }
+                    } catch {
+                        throw NSError(domain: "ModelLoader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to load image from path '\(imagePath)': \(error.localizedDescription)"])
                     }
-                } catch {
-                    throw NSError(domain: "ModelLoader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to load image from path '\(imagePath)': \(error.localizedDescription)"])
+                    valueIndex += 1
                 }
-            } else {
-                throw NSError(domain: "ModelLoader", code: 4, userInfo: [NSLocalizedDescriptionKey: "No image path provided"])
-            }
-        default:
-            let doubleValues = values.compactMap { Double($0) }
-            if !doubleValues.isEmpty {
-                let multiArray = try MLMultiArray(shape: [NSNumber(value: doubleValues.count)], dataType: .double)
-                for (index, value) in doubleValues.enumerated() {
-                    multiArray[index] = NSNumber(value: value)
+            default:
+                let doubleValues = values.compactMap { Double($0) }
+                if !doubleValues.isEmpty {
+                    let multiArray = try MLMultiArray(shape: [NSNumber(value: doubleValues.count)], dataType: .double)
+                    for (index, value) in doubleValues.enumerated() {
+                        multiArray[index] = NSNumber(value: value)
+                    }
+                    inputs[inputName] = multiArray
                 }
-                inputs[inputName] = multiArray
             }
         }
         
         return inputs
+    }
+    
+    private func createMultiArrayInput(name: String, constraint: MLMultiArrayConstraint, values: [String], valueIndex: inout Int) throws -> MLMultiArray {
+        let shape = constraint.shape
+        let dataType = constraint.dataType
+        
+        // Handle special cases for common language model inputs
+        if name.lowercased().contains("mask") || name.lowercased().contains("causal") {
+            return try createCausalMask(shape: shape, dataType: dataType)
+        }
+        
+        if name.lowercased().contains("position") || name.lowercased().contains("pos") {
+            return try createPositionalIds(shape: shape, dataType: dataType)
+        }
+        
+        // Default: try to fill with provided values
+        let multiArray = try MLMultiArray(shape: shape, dataType: dataType)
+        let totalElements = shape.reduce(1) { $0 * $1.intValue }
+        
+        // Fill with provided values or defaults
+        for i in 0..<totalElements {
+            let value: Any
+            if valueIndex < values.count {
+                if let doubleVal = Double(values[valueIndex]) {
+                    value = doubleVal
+                } else {
+                    value = 0.0
+                }
+                if i == 0 { valueIndex += 1 } // Only increment once per input
+            } else {
+                value = 0.0
+            }
+            multiArray[i] = NSNumber(value: value as! Double)
+        }
+        
+        return multiArray
+    }
+    
+    private func createCausalMask(shape: [NSNumber], dataType: MLMultiArrayDataType) throws -> MLMultiArray {
+        let multiArray = try MLMultiArray(shape: shape, dataType: dataType)
+        
+        // For causal masks, typically shape is [batch, seq_len, seq_len]
+        if shape.count >= 2 {
+            let seqLen = shape[shape.count - 1].intValue
+            let prevSeqLen = shape[shape.count - 2].intValue
+            
+            // Create lower triangular mask (causal)
+            for i in 0..<prevSeqLen {
+                for j in 0..<seqLen {
+                    let index = i * seqLen + j
+                    multiArray[index] = NSNumber(value: j <= i ? 1.0 : 0.0)
+                }
+            }
+        }
+        
+        return multiArray
+    }
+    
+    private func createPositionalIds(shape: [NSNumber], dataType: MLMultiArrayDataType) throws -> MLMultiArray {
+        let multiArray = try MLMultiArray(shape: shape, dataType: dataType)
+        let totalElements = shape.reduce(1) { $0 * $1.intValue }
+        
+        // Fill with sequential position IDs
+        for i in 0..<totalElements {
+            multiArray[i] = NSNumber(value: i)
+        }
+        
+        return multiArray
     }
     
     public func extractOutputArray(from prediction: MLFeatureProvider, name: String = "output") -> [Double]? {
