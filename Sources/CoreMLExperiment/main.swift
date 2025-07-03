@@ -7,9 +7,6 @@ struct CoreMLExperiment {
     static func main() async throws {
         let loader = ModelLoader()
         
-        print("Core ML Experiment - Model Loading and Compilation")
-        print("==================================================")
-        
         let args = CommandLine.arguments
         guard args.count > 1 else {
             printUsage()
@@ -135,7 +132,6 @@ struct CoreMLExperiment {
         let url = URL(fileURLWithPath: modelPath)
         
         do {
-            print("🔮 Running inference...")
             let model = try loader.loadModel(from: url)
             
             let doubleValues = inputValues.compactMap { Double($0) }
@@ -143,8 +139,6 @@ struct CoreMLExperiment {
                 print("❌ Error: Invalid input values. Please provide numeric values.")
                 return
             }
-            
-            print("📥 Input: \(doubleValues)")
             
             let inputs = try loader.createInputArray(doubleValues)
             let prediction = try loader.runInference(model: model, inputs: inputs)
