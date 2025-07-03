@@ -1,6 +1,7 @@
 import CoreML
 import Foundation
 import AppKit
+import CoreVideo
 
 public class ModelLoader {
     public init() {}
@@ -76,7 +77,17 @@ public class ModelLoader {
                     do {
                         let imageData = try Data(contentsOf: url)
                         if let image = NSImage(data: imageData) {
-                            inputs[inputName] = image
+                            // Get the required size from the model's image constraint
+                            var targetSize = CGSize(width: 416, height: 416) // TinyYolo default
+                            if let imageConstraint = inputFeature.imageConstraint {
+                                targetSize = CGSize(width: imageConstraint.pixelsWide, height: imageConstraint.pixelsHigh)
+                            }
+                            
+                            if let pixelBuffer = image.toCVPixelBuffer(size: targetSize) {
+                                inputs[inputName] = pixelBuffer
+                            } else {
+                                throw NSError(domain: "ModelLoader", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to convert NSImage to CVPixelBuffer"])
+                            }
                         } else {
                             throw NSError(domain: "ModelLoader", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to create NSImage from data"])
                         }
@@ -178,5 +189,58 @@ public class ModelLoader {
             results.append(output[i].doubleValue)
         }
         return results
+    }
+}
+
+extension NSImage {
+    func toCVPixelBuffer(size: CGSize = CGSize(width: 416, height: 416)) -> CVPixelBuffer? {
+        let attrs = [
+            kCVPixelBufferCGImageCompatibilityKey: kCFBooleanTrue,
+            kCVPixelBufferCGBitmapContextCompatibilityKey: kCFBooleanTrue
+        ] as CFDictionary
+        
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            Int(size.width),
+            Int(size.height),
+            kCVPixelFormatType_32BGRA, // Common format for CoreML
+            attrs,
+            &pixelBuffer
+        )
+        
+        guard status == kCVReturnSuccess, let buffer = pixelBuffer else {
+            return nil
+        }
+        
+        CVPixelBufferLockBaseAddress(buffer, CVPixelBufferLockFlags(rawValue: 0))
+        
+        let pixelData = CVPixelBufferGetBaseAddress(buffer)
+        let rgbColorSpace = CGColorSpaceCreateDeviceRGB()
+        
+        guard let context = CGContext(
+            data: pixelData,
+            width: Int(size.width),
+            height: Int(size.height),
+            bitsPerComponent: 8,
+            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+            space: rgbColorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+        ) else {
+            CVPixelBufferUnlockBaseAddress(buffer, CVPixelBufferLockFlags(rawValue: 0))
+            return nil
+        }
+        
+        let drawRect = CGRect(x: 0, y: 0, width: size.width, height: size.height)
+        
+        context.clear(drawRect)
+        
+        if let cgImage = self.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            context.draw(cgImage, in: drawRect)
+        }
+        
+        CVPixelBufferUnlockBaseAddress(buffer, CVPixelBufferLockFlags(rawValue: 0))
+        
+        return buffer
     }
 }

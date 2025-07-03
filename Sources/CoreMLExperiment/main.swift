@@ -37,6 +37,11 @@ struct CoreMLExperiment {
           coreml-experiment compile <input> <output> - Compile model to optimized binary
           coreml-experiment info <model-path>     - Show model information
           coreml-experiment infer <model-path> <input-values> - Run inference on model
+        
+        Examples:
+          coreml-experiment infer simple_model.mlmodel 3.0
+          coreml-experiment infer image_model.mlmodel path/to/image.jpg
+          coreml-experiment infer multi_input_model.mlmodel 1.0 path/to/image.png
         """)
     }
     
@@ -122,7 +127,10 @@ struct CoreMLExperiment {
     static func handleInfer(args: [String], loader: ModelLoader) async throws {
         guard args.count >= 2 else {
             print("Error: Model path and input values required")
-            print("Example: coreml-experiment infer simple_model.mlmodel 3.0")
+            print("Examples:")
+            print("  coreml-experiment infer simple_model.mlmodel 3.0")
+            print("  coreml-experiment infer image_model.mlmodel path/to/image.jpg")
+            print("  coreml-experiment infer multi_input_model.mlmodel 1.0 path/to/image.png")
             return
         }
         
@@ -133,14 +141,39 @@ struct CoreMLExperiment {
         
         do {
             let model = try loader.loadModel(from: url)
+            let description = loader.getModelInfo(model)
+            
+            print("🔍 Model inputs:")
+            for (name, feature) in description.inputDescriptionsByName {
+                print("  - \(name): \(feature.type)")
+            }
+            print("")
             
             let inputs = try loader.createInputs(from: inputValues, for: model)
+            print("📥 Running inference with inputs: \(inputValues)")
+            
             let prediction = try loader.runInference(model: model, inputs: inputs)
             
-            if let outputs = loader.extractOutputArray(from: prediction) {
-                print(outputs)
-            } else {
-                print("❌ Failed to extract output from prediction")
+            print("📤 Outputs:")
+            for (name, feature) in description.outputDescriptionsByName {
+                if let output = prediction.featureValue(for: name) {
+                    switch feature.type {
+                    case .multiArray:
+                        if let outputArray = loader.extractOutputArray(from: prediction, name: name) {
+                            print("  - \(name): \(outputArray)")
+                        }
+                    case .image:
+                        print("  - \(name): Image output")
+                    case .string:
+                        print("  - \(name): \(output.stringValue ?? "nil")")
+                    case .double:
+                        print("  - \(name): \(output.doubleValue)")
+                    case .int64:
+                        print("  - \(name): \(output.int64Value)")
+                    default:
+                        print("  - \(name): \(output)")
+                    }
+                }
             }
             
         } catch {
