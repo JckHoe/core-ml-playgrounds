@@ -24,6 +24,8 @@ struct CoreMLExperiment {
             try await handleInfo(args: Array(args.dropFirst(2)), loader: loader)
         case "infer":
             try await handleInfer(args: Array(args.dropFirst(2)), loader: loader)
+        case "interactive":
+            try await handleInteractive(args: Array(args.dropFirst(2)), loader: loader)
         default:
             print("Unknown command: \(command)")
             printUsage()
@@ -37,11 +39,18 @@ struct CoreMLExperiment {
           coreml-experiment compile <input> <output> - Compile model to optimized binary
           coreml-experiment info <model-path>     - Show model information
           coreml-experiment infer <model-path> <input-values> - Run inference on model
+          coreml-experiment interactive <model-path> - Interactive mode via STDIN/STDOUT
         
         Examples:
           coreml-experiment infer simple_model.mlmodel 3.0
           coreml-experiment infer image_model.mlmodel path/to/image.jpg
           coreml-experiment infer multi_input_model.mlmodel 1.0 path/to/image.png
+          coreml-experiment interactive simple_model.mlmodel
+        
+        Interactive mode:
+          Keeps model loaded in memory and processes JSON input from STDIN
+          Input format: {"inputs": ["3.0", "1.5"]}
+          Output format: {"outputs": {"result": [7.0]}}
         """)
     }
     
@@ -178,6 +187,97 @@ struct CoreMLExperiment {
             
         } catch {
             print("❌ Failed to run inference: \(error.localizedDescription)")
+        }
+    }
+    
+    static func handleInteractive(args: [String], loader: ModelLoader) async throws {
+        guard let modelPath = args.first else {
+            let errorResponse = ["error": "Model path required"]
+            if let jsonData = try? JSONSerialization.data(withJSONObject: errorResponse),
+               let jsonString = String(data: jsonData, encoding: .utf8) {
+                print(jsonString)
+            }
+            return
+        }
+        
+        let url = URL(fileURLWithPath: modelPath)
+        let model: MLModel
+        let description: MLModelDescription
+        
+        do {
+            model = try loader.loadModel(from: url)
+            description = loader.getModelInfo(model)
+            
+            // Send ready signal
+            let readyResponse = ["status": "ready", "model": modelPath]
+            if let jsonData = try? JSONSerialization.data(withJSONObject: readyResponse),
+               let jsonString = String(data: jsonData, encoding: .utf8) {
+                print(jsonString)
+                fflush(stdout)
+            }
+        } catch {
+            let errorResponse = ["error": "Failed to load model: \(error.localizedDescription)"]
+            if let jsonData = try? JSONSerialization.data(withJSONObject: errorResponse),
+               let jsonString = String(data: jsonData, encoding: .utf8) {
+                print(jsonString)
+            }
+            return
+        }
+        
+        // Enter interactive loop
+        while let line = readLine() {
+            do {
+                guard let inputData = line.data(using: .utf8),
+                      let inputJSON = try JSONSerialization.jsonObject(with: inputData) as? [String: Any],
+                      let inputs = inputJSON["inputs"] as? [String] else {
+                    let errorResponse = ["error": "Invalid input format. Expected: {\"inputs\": [\"value1\", \"value2\"]}"]
+                    if let jsonData = try? JSONSerialization.data(withJSONObject: errorResponse),
+                       let jsonString = String(data: jsonData, encoding: .utf8) {
+                        print(jsonString)
+                        fflush(stdout)
+                    }
+                    continue
+                }
+                
+                let modelInputs = try loader.createInputs(from: inputs, for: model)
+                let prediction = try loader.runInference(model: model, inputs: modelInputs)
+                
+                var outputs: [String: Any] = [:]
+                
+                for (name, feature) in description.outputDescriptionsByName {
+                    if let output = prediction.featureValue(for: name) {
+                        switch feature.type {
+                        case .multiArray:
+                            if let outputArray = loader.extractOutputArray(from: prediction, name: name) {
+                                outputs[name] = outputArray
+                            }
+                        case .string:
+                            outputs[name] = output.stringValue ?? ""
+                        case .double:
+                            outputs[name] = output.doubleValue
+                        case .int64:
+                            outputs[name] = output.int64Value
+                        default:
+                            outputs[name] = "\(output)"
+                        }
+                    }
+                }
+                
+                let response = ["outputs": outputs]
+                if let jsonData = try? JSONSerialization.data(withJSONObject: response),
+                   let jsonString = String(data: jsonData, encoding: .utf8) {
+                    print(jsonString)
+                    fflush(stdout)
+                }
+                
+            } catch {
+                let errorResponse = ["error": "Failed to run inference: \(error.localizedDescription)"]
+                if let jsonData = try? JSONSerialization.data(withJSONObject: errorResponse),
+                   let jsonString = String(data: jsonData, encoding: .utf8) {
+                    print(jsonString)
+                    fflush(stdout)
+                }
+            }
         }
     }
 }
