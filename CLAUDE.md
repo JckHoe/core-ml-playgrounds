@@ -9,11 +9,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build the Swift package
 swift build
 
-# Run the executable with commands
+# Run the executable with commands (Direct mode - loads model each time)
 swift run coreml-experiment load path/to/model.mlmodel
 swift run coreml-experiment compile input.mlmodel output.mlmodelc
 swift run coreml-experiment info path/to/model.mlmodel
 swift run coreml-experiment infer path/to/model.mlmodel 3.0
+
+# Daemon mode (keeps models in memory for faster inference)
+swift run coreml-experiment start-daemon        # Start daemon server
+swift run coreml-experiment daemon-status       # Check daemon status
+swift run coreml-experiment infer path/to/model.mlmodel 3.0  # Auto-uses daemon
+swift run coreml-experiment stop-daemon         # Stop daemon server
 
 # Run tests
 swift test
@@ -46,6 +52,18 @@ This is a Swift Package Manager project that provides Core ML model loading, com
   - Model loading, compilation, and optimization
   - Input/output array creation and extraction
   - Inference execution with MLFeatureProvider
+  - `DaemonServer` class for keeping models in memory
+  - `DaemonClient` class for IPC communication
+
+### Operating Modes
+
+**Direct Mode**: Each command loads the model fresh, suitable for one-off operations.
+
+**Daemon Mode**: A background server process keeps loaded models in memory for faster repeated inference:
+- Start daemon: `swift run coreml-experiment start-daemon`
+- Commands automatically use daemon if running
+- Explicit daemon usage: `--daemon` flag
+- Daemon management: `daemon-status`, `cache-info`, `stop-daemon`
 
 ### Platform Support
 - Supports macOS 13.0+, iOS 16.0+, watchOS 9.0+, tvOS 16.0+
