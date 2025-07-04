@@ -207,14 +207,6 @@ struct CoreMLExperiment {
         do {
             model = try loader.loadModel(from: url)
             description = loader.getModelInfo(model)
-            
-            // Send ready signal
-            let readyResponse = ["status": "ready", "model": modelPath]
-            if let jsonData = try? JSONSerialization.data(withJSONObject: readyResponse),
-               let jsonString = String(data: jsonData, encoding: .utf8) {
-                print(jsonString)
-                fflush(stdout)
-            }
         } catch {
             let errorResponse = ["error": "Failed to load model: \(error.localizedDescription)"]
             if let jsonData = try? JSONSerialization.data(withJSONObject: errorResponse),
