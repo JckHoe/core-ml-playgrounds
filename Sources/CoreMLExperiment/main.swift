@@ -24,6 +24,8 @@ struct CoreMLExperiment {
             try await handleInfo(args: Array(args.dropFirst(2)), loader: loader)
         case "infer":
             try await handleInfer(args: Array(args.dropFirst(2)), loader: loader)
+        case "infer-text":
+            try await handleInferText(args: Array(args.dropFirst(2)), loader: loader)
         case "interactive":
             try await handleInteractive(args: Array(args.dropFirst(2)), loader: loader)
         default:
@@ -39,12 +41,14 @@ struct CoreMLExperiment {
           coreml-experiment compile <input> <output> - Compile model to optimized binary
           coreml-experiment info <model-path>     - Show model information
           coreml-experiment infer <model-path> <input-values> - Run inference on model
+          coreml-experiment infer-text <model-path> <text> - Run text inference on LLM model
           coreml-experiment interactive <model-path> - Interactive mode via STDIN/STDOUT
         
         Examples:
           coreml-experiment infer simple_model.mlmodel 3.0
           coreml-experiment infer image_model.mlmodel path/to/image.jpg
           coreml-experiment infer multi_input_model.mlmodel 1.0 path/to/image.png
+          coreml-experiment infer-text llama_model.mlmodelc "Hello world"
           coreml-experiment interactive simple_model.mlmodel
         
         Interactive mode:
@@ -149,7 +153,17 @@ struct CoreMLExperiment {
         let url = URL(fileURLWithPath: modelPath)
         
         do {
-            let model = try loader.loadModel(from: url)
+            // Try to load with stateful configuration first
+            let model: MLModel
+            do {
+                model = try loader.loadModelForStatefulInference(from: url)
+                print("🔄 Loaded model with stateful inference configuration")
+            } catch {
+                // Fall back to regular loading
+                model = try loader.loadModel(from: url)
+                print("📋 Loaded model with regular configuration")
+            }
+            
             let description = loader.getModelInfo(model)
             
             print("🔍 Model inputs:")
@@ -158,10 +172,21 @@ struct CoreMLExperiment {
             }
             print("")
             
-            let inputs = try loader.createInputs(from: inputValues, for: model)
-            print("📥 Running inference with inputs: \(inputValues)")
+            // Check if model requires stateful inference and create appropriate inputs
+            let inputs: [String: Any]
+            let prediction: MLFeatureProvider
             
-            let prediction = try loader.runInference(model: model, inputs: inputs)
+            if loader.requiresStatefulInference(model: model) {
+                print("🔄 Using stateful inference for model with MLState inputs")
+                // Try to create inputs with LLM-specific handling
+                inputs = try loader.createTextInputsForLLM(from: inputValues.joined(separator: " "), for: model)
+                prediction = try loader.runStatefulInference(model: model, inputs: inputs)
+            } else {
+                inputs = try loader.createInputs(from: inputValues, for: model)
+                prediction = try loader.runInference(model: model, inputs: inputs)
+            }
+            
+            print("📥 Running inference with inputs: \(inputValues)")
             
             print("📤 Outputs:")
             for (name, feature) in description.outputDescriptionsByName {
@@ -187,6 +212,97 @@ struct CoreMLExperiment {
             
         } catch {
             print("❌ Failed to run inference: \(error.localizedDescription)")
+        }
+    }
+    
+    static func handleInferText(args: [String], loader: ModelLoader) async throws {
+        guard args.count >= 2 else {
+            print("Error: Model path and text input required")
+            print("Examples:")
+            print("  coreml-experiment infer-text llama_model.mlmodelc \"Hello world\"")
+            print("  coreml-experiment infer-text text_model.mlmodel \"Generate a response\"")
+            return
+        }
+        
+        let modelPath = args[0]
+        let text = args.dropFirst(1).joined(separator: " ")
+        
+        let url = URL(fileURLWithPath: modelPath)
+        
+        do {
+            let model = try loader.loadModel(from: url)
+            let description = loader.getModelInfo(model)
+            
+            print("🔍 Model inputs:")
+            for (name, feature) in description.inputDescriptionsByName {
+                print("  - \(name): \(feature.type)")
+            }
+            print("")
+            
+            print("📝 Processing text: \"\(text)\"")
+            
+            // Check if model requires stateful inference and create appropriate inputs
+            let inputs: [String: Any]
+            let prediction: MLFeatureProvider
+            
+            if loader.requiresStatefulInference(model: model) {
+                print("🔄 Using stateful inference for model with MLState inputs")
+                inputs = try loader.createTextInputsForLLM(from: text, for: model)
+                prediction = try loader.runStatefulInference(model: model, inputs: inputs)
+            } else {
+                inputs = try loader.createTextInputs(from: text, for: model)
+                prediction = try loader.runInference(model: model, inputs: inputs)
+            }
+            
+            print("🤖 Running text inference...")
+            
+            print("📤 Outputs:")
+            for (name, feature) in description.outputDescriptionsByName {
+                if let output = prediction.featureValue(for: name) {
+                    switch feature.type {
+                    case .multiArray:
+                        if let outputArray = loader.extractOutputArray(from: prediction, name: name) {
+                            // For LLM models, show logits statistics instead of raw values
+                            if outputArray.count > 10 {
+                                let maxLogit = outputArray.max() ?? 0.0
+                                let minLogit = outputArray.min() ?? 0.0
+                                let avgLogit = outputArray.reduce(0.0, +) / Double(outputArray.count)
+                                print("  - \(name): [\(outputArray.count) logits] max=\(String(format: "%.3f", maxLogit)) min=\(String(format: "%.3f", minLogit)) avg=\(String(format: "%.3f", avgLogit))")
+                            } else {
+                                print("  - \(name): \(outputArray)")
+                            }
+                        }
+                    case .string:
+                        print("  - \(name): \(output.stringValue ?? "nil")")
+                    case .double:
+                        print("  - \(name): \(output.doubleValue)")
+                    case .int64:
+                        print("  - \(name): \(output.int64Value)")
+                    default:
+                        print("  - \(name): \(output)")
+                    }
+                }
+            }
+            
+            print("\n✅ Text inference completed successfully!")
+            
+        } catch {
+            let errorMessage = "\(error)"
+            print("❌ Failed to run text inference: \(error.localizedDescription)")
+            
+            // Check if this is a keyCache-related error and provide helpful guidance
+            if errorMessage.contains("keyCache") || errorMessage.contains("MLState") {
+                print("")
+                print("💡 This appears to be a stateful LLM model that expects key-value caching.")
+                print("   The model was likely compiled with stateful inference enabled but")
+                print("   the interface doesn't properly expose the required state inputs.")
+                print("")
+                print("🔧 Potential solutions:")
+                print("   1. Recompile the model with a stateless interface")
+                print("   2. Use a different model compilation approach")
+                print("   3. Use the original .mlmodel file instead of .mlmodelc")
+                print("   4. Check if a newer version of CoreML/Xcode is required")
+            }
         }
     }
     
